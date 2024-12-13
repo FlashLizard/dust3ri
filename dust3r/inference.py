@@ -51,6 +51,10 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
     result = dict(view1=view1, view2=view2, pred1=pred1, pred2=pred2, loss=loss)
     return result[ret] if ret else result
 
+def loss_of_one_batch_with_single_view(batch, model, criterion, device, symmetrize_batch=False, use_amp=False, ret=None):
+    view1, _ = batch
+    batch = [view1, view1]
+    return loss_of_one_batch(batch, model, criterion, device, symmetrize_batch, use_amp, ret)
 
 @torch.no_grad()
 def inference(pairs, model, device, batch_size=8, verbose=True):

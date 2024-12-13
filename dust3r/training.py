@@ -29,11 +29,12 @@ torch.backends.cuda.matmul.allow_tf32 = True  # for gpu >= Ampere and pytorch >=
 from dust3r.model import AsymmetricCroCo3DStereo, inf  # noqa: F401, needed when loading the model
 from dust3r.datasets import get_data_loader  # noqa
 from dust3r.losses import *  # noqa: F401, needed when loading the model
-from dust3r.inference import loss_of_one_batch  # noqa
+from dust3r.inference import loss_of_one_batch, loss_of_one_batch_with_single_view  # noqa
 
 import dust3r.utils.path_to_croco  # noqa: F401
 import croco.utils.misc as misc  # noqa
 from croco.utils.misc import NativeScalerWithGradNormCount as NativeScaler  # noqa
+from safetensors.torch import load_file
 
 
 def get_args_parser():
@@ -137,9 +138,14 @@ def train(args):
 
     if args.pretrained and not args.resume:
         print('Loading pretrained: ', args.pretrained)
-        ckpt = torch.load(args.pretrained, map_location=device)
-        print(model.load_state_dict(ckpt['model'], strict=False))
-        del ckpt  # in case it occupies memory
+        if args.pretrained.endswith('.pth'):
+            ckpt = torch.load(args.pretrained, map_location=device)
+            print(model.load_state_dict(ckpt['model'], strict=False))
+            del ckpt  # in case it occupies memory
+        elif args.pretrained.endswith('.safetensors'):
+            state_dict = load_file(args.pretrained)
+            model.load_state_dict(state_dict, strict=False)
+            del state_dict  # in case it occupies memory
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
     if args.lr is None:  # only base_lr is specified
@@ -362,6 +368,50 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                                        use_amp=bool(args.amp), ret='loss')
         loss_value, loss_details = loss_tuple  # criterion returns two values
         metric_logger.update(loss=float(loss_value), **loss_details)
+
+    # gather the stats from all processes
+    metric_logger.synchronize_between_processes()
+    print("Averaged stats:", metric_logger)
+
+    aggs = [('avg', 'global_avg'), ('med', 'median')]
+    results = {f'{k}_{tag}': getattr(meter, attr) for k, meter in metric_logger.meters.items() for tag, attr in aggs}
+
+    if log_writer is not None:
+        for name, val in results.items():
+            log_writer.add_scalar(prefix + '_' + name, val, 1000 * epoch)
+
+    return results
+
+@torch.no_grad()
+def test_one_epoch_with_single_view(model: torch.nn.Module, criterion: torch.nn.Module,
+                   data_loader: Sized, device: torch.device, epoch: int,
+                   args, log_writer=None, prefix='test', save_pts3d_interval=10, cache_dir='cache/test'):
+
+    model.eval()
+    metric_logger = misc.MetricLogger(delimiter="  ")
+    metric_logger.meters = defaultdict(lambda: misc.SmoothedValue(window_size=9**9))
+    header = 'Test Epoch: [{}]'.format(epoch)
+
+    if log_writer is not None:
+        print('log_dir: {}'.format(log_writer.log_dir))
+
+    if hasattr(data_loader, 'dataset') and hasattr(data_loader.dataset, 'set_epoch'):
+        data_loader.dataset.set_epoch(epoch)
+    if hasattr(data_loader, 'sampler') and hasattr(data_loader.sampler, 'set_epoch'):
+        data_loader.sampler.set_epoch(epoch)
+
+    for idx, batch in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
+        results = loss_of_one_batch_with_single_view(batch, model, criterion, device,
+                                       symmetrize_batch=True,
+                                       use_amp=bool(args.amp))
+        loss_value, loss_details = results['loss']  # criterion returns two values
+        view_pts3d = results['view1']['pts3d']
+        pred_pts3d = results['pred1']['pts3d']
+        metric_logger.update(loss=float(loss_value), **loss_details)
+        if idx % save_pts3d_interval == 0:
+            #save as npz
+            os.makedirs(cache_dir, exist_ok=True)
+            np.savez(os.path.join(cache_dir, f'{idx}.npz'), view_pts3d=view_pts3d, pred_pts3d=pred_pts3d)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
