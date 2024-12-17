@@ -29,6 +29,7 @@ from dust3r.training import build_dataset, save_final_model
 torch.backends.cuda.matmul.allow_tf32 = True  # for gpu >= Ampere and pytorch >= 1.12
 
 from dust3r.model import AsymmetricCroCo3DStereo, inf  # noqa: F401, needed when loading the model
+from dust3r_inpaint.model import DUSt3R_InpaintModel
 from dust3r.datasets import get_data_loader  # noqa
 from dust3r.losses import *  # noqa: F401, needed when loading the model
 from dust3r.inference import loss_of_one_batch
@@ -40,6 +41,8 @@ from croco.utils.misc import NativeScalerWithGradNormCount as NativeScaler  # no
 from safetensors.torch import load_file
 import open3d as o3d
 from PIL import Image
+import copy
+
 
 def train(args):
     misc.init_distributed_mode(args)
@@ -52,6 +55,7 @@ def train(args):
 
     # auto resume
     last_ckpt_fname = os.path.join(args.output_dir, f'checkpoint-last.pth')
+    #TODO: change to auto resume
     args.resume = last_ckpt_fname if os.path.isfile(last_ckpt_fname) else None
 
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
@@ -156,17 +160,17 @@ def train(args):
 
         # Test on multiple datasets
         new_best = False
-        # if (epoch > 0 and args.eval_freq > 0 and epoch % args.eval_freq == 0):
-        #     test_stats = {}
-        #     for test_name, testset in data_loader_test.items():
-        #         stats = test_one_epoch(model, test_criterion, testset,
-        #                                device, epoch, log_writer=log_writer, args=args, prefix=test_name)
-        #         test_stats[test_name] = stats
+        if (epoch > 0 and args.eval_freq > 0 and epoch % args.eval_freq == 0):
+            test_stats = {}
+            for test_name, testset in data_loader_test.items():
+                stats = test_one_epoch(model, test_criterion, testset,
+                                       device, epoch, log_writer=log_writer, args=args, prefix=test_name)
+                test_stats[test_name] = stats
 
-        #         # Save best of all
-        #         if stats['loss_med'] < best_so_far:
-        #             best_so_far = stats['loss_med']
-        #             new_best = True
+                # Save best of all
+                if stats['loss_med'] < best_so_far:
+                    best_so_far = stats['loss_med']
+                    new_best = True
 
         # Save more stuff
         write_log_stats(epoch, train_stats, test_stats)
@@ -183,7 +187,7 @@ def train(args):
         train_stats = train_one_epoch(
             model, train_criterion, data_loader_train,
             optimizer, device, epoch, loss_scaler,
-            log_writer=log_writer,# random_transform=random_transform,
+            log_writer=log_writer,
             args=args)
 
     total_time = time.time() - start_time
@@ -195,7 +199,7 @@ def train(args):
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Sized, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler,
-                    args, log_writer=None):
+                    args, log_writer=None, vis_interval=500, cache_dir_root = 'cache'):
     assert torch.backends.cuda.matmul.allow_tf32 == True
 
     model.train(True)
@@ -216,16 +220,65 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
         epoch_f = epoch + data_iter_step / len(data_loader)
+        # batch: view1(img(B,C,H,W), pts3d(B,3,N), camera_pose(B,4,4,...)), view2(...)
 
         # we use a per iteration (instead of per epoch) lr scheduler
         if data_iter_step % accum_iter == 0:
             misc.adjust_learning_rate(optimizer, epoch_f, args)
         #TIP: change with random transform
-        loss_tuple = loss_of_one_batch_with_random_transform(batch, model, criterion, device,
-                                                          symmetrize_batch=True,
-                                                          use_amp=bool(args.amp), ret='loss')
+        
+        origin_view1 = copy.deepcopy(batch[0])
+        result = loss_of_one_batch_with_random_transform(batch, model, criterion, device,
+                                                          symmetrize_batch=False,
+                                                          use_amp=bool(args.amp))
+        view1, view2, pred1, pred2, loss_tuple = result['view1'], result['view2'], result['pred1'], result['pred2'], result['loss']
         loss, loss_details = loss_tuple  # criterion returns two values
         loss_value = float(loss)
+        
+        if data_iter_step % vis_interval == 0:
+            # log visual sample:
+            with torch.no_grad():
+                cache_dir = os.path.join(args.output_dir  , cache_dir_root, f'epoch-{epoch}_step-{data_iter_step}')
+                os.makedirs(cache_dir, exist_ok=True)
+                
+                mask_begin_pos = view1['mask_begin_pos']
+                mask_end_pos = view1['mask_end_pos']
+                x1,y1 = mask_begin_pos
+                x2,y2 = mask_end_pos
+                
+                # save img
+                img = view1['img'][0].permute(1,2,0)
+                img = ((img - img.min())/(img.max()-img.min())*255).cpu().numpy().astype(np.uint8)
+                Image.fromarray(img).save(f'{cache_dir}/img.jpg')
+                masked_img = img
+                masked_img[x1:x2,y1:y2,:] = 0
+                Image.fromarray(masked_img).save(f'{cache_dir}/({x1},{y1})-({x2},{y2})masked_img.jpg')
+                
+                # save pcd
+                origin_pcd = geotrf(inv(origin_view1['camera_pose']), origin_view1['pts3d'])
+                new_pcd = view1['camera_pts3d']
+                # out_pcd = pred1['pts3d']
+                _, _, out_pcd, _, valid1, _, _ = get_all_pts3d(view1, view2, pred1, pred2)
+                valid1[1,:,:]=0
+                origin_pcd = normalize_pointcloud(origin_pcd, None, 'avg_dis')
+                new_pcd = normalize_pointcloud(new_pcd, None, 'avg_dis')
+                out_pcd = normalize_pointcloud(out_pcd, None, 'avg_dis')
+                
+                # save the first one
+                save_pcd(f'{cache_dir}/origin_pcd.ply', origin_pcd[0])
+                save_pcd(f'{cache_dir}/new_pcd.ply', new_pcd[0])
+                save_pcd(f'{cache_dir}/out_pcd.ply', out_pcd[valid1])
+                masked_origin_pcd = origin_pcd
+                masked_origin_pcd[:,x1:x2,y1:y2,:] = 0
+                save_pcd(f'{cache_dir}/masked_origin_pcd.ply', masked_origin_pcd[0])
+                
+                # save R and T info
+                R = view1['R'][0]
+                T = view1['T'][0]
+                with open(f'{cache_dir}/RT.txt', 'w') as f:
+                    f.write(f'R:\n{R}\n')
+                    f.write(f'T:\n{T}\n')
+                
 
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value), force=True)
@@ -283,18 +336,11 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         data_loader.sampler.set_epoch(epoch)
 
     for idx, batch in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
-        results = loss_of_one_batch(batch, model, criterion, device,
-                                       symmetrize_batch=True,
+        results = loss_of_one_batch_with_random_transform(batch, model, criterion, device,
+                                       symmetrize_batch=False,
                                        use_amp=bool(args.amp))
         loss_value, loss_details = results['loss']  # criterion returns two values
-        view_pts3d = results['view1']['pts3d']
-        pred_pts3d = results['pred1']['pts3d']
         metric_logger.update(loss=float(loss_value), **loss_details)
-        if idx % save_pts3d_interval == 0:
-            #save as npz
-            os.makedirs(cache_dir, exist_ok=True)
-            save_pcd(os.path.join(cache_dir, f'{idx}-single-gt.ply'), view_pts3d[0])
-            save_pcd(os.path.join(cache_dir, f'{idx}-single-pred.ply'), pred_pts3d[0])
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
@@ -311,7 +357,8 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 def save_pcd(save_path, points):
     if isinstance(points, torch.Tensor):
-        points = points.flatten(0,-2)
+        if points.ndim > 2:
+            points = points.flatten(0,-2)
         points = points.cpu().numpy()
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points)

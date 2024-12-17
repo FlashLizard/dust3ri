@@ -62,14 +62,14 @@ class DUSt3R_InpaintModel (AsymmetricCroCo3DStereo):
     def load_state_dict(self, ckpt, from_dust3r=True, **kw):
         # duplicate all weights for the second decoder if not present
         new_ckpt = dict(ckpt)
-        if from_dust3r:
+        if ckpt['patch_embed.proj.weight'].shape[1]==3:
             new_weights = torch.zeros(self.enc_embed_dim, 7, self.patch_size, self.patch_size)
-            new_weights[:, :3, :, :] = ckpt['patch_embed.proj.weights']
-            new_ckpt['patch_embed.proj.weights'] = new_weights
-            if ckpt['patch_embed.proj.bias'] is not None:
-                new_bias = torch.zeros(self.enc_embed_dim)
-                new_bias[:3] = ckpt['patch_embed.proj.bias']
-                new_ckpt['patch_embed.proj.bias'] = new_bias
+            new_weights[:, :3, :, :] = ckpt['patch_embed.proj.weight']
+            new_ckpt['patch_embed.proj.weight'] = new_weights
+            # if ckpt['patch_embed.proj.bias'] is not None:
+            #     new_bias = torch.zeros(self.enc_embed_dim)
+            #     new_bias[:3] = ckpt['patch_embed.proj.bias']
+            #     new_ckpt['patch_embed.proj.bias'] = new_bias
         return super().load_state_dict(new_ckpt, **kw)
 
     # def set_freeze(self, freeze):  # this is for use by downstream models
@@ -127,6 +127,8 @@ class DUSt3R_InpaintModel (AsymmetricCroCo3DStereo):
 
     def _encode_symmetrized(self, view1, view2):
         # change img to input
+        # img1 = view1['input']
+        # img2 = view2['input']
         img1 = view1['input']
         img2 = view2['input']
         B = img1.shape[0]

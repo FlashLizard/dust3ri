@@ -16,7 +16,9 @@ def loss_of_one_batch_with_random_transform(batch, model, criterion, device, sym
     view1, _ = batch
     _, R, T = random_transform(view1['pts3d'])
     view1['camera_pose'] = torch.bmm(torch.bmm(R, T), view1['camera_pose'])
-    view1['pts3d'] = geotrf(inv(view1['camera_pose']), view1['pts3d'])
+    view1['camera_pts3d'] = geotrf(inv(view1['camera_pose']), view1['pts3d'])
+    view1['R'] = R
+    view1['T'] = T
     view1 = random_mask(view1)
     batch = [view1, view1]
     return loss_of_one_batch_with_single_view(batch, model, criterion, device, symmetrize_batch, use_amp, ret)
@@ -95,10 +97,18 @@ def random_transform(pts3d,scale=None):
     #TODO: change to individual value for each matrix
     return pts3d, R.repeat(B,1,1), T.repeat(B,1,1)
 
-def random_mask(view,min_scale=10,max_scale=200):
+def random_mask(view,min_scale=20,max_scale=200):
+    
     img = view['img']
     B, C, width, height = view['img'].shape
-    mask_center = torch.rand(2) * torch.tensor([width,height])
+    
+    mean = torch.tensor([0.5, 0.5]) 
+    std = torch.tensor([0.1, 0.1])
+
+    normal_dist = torch.distributions.Normal(mean, std)
+    mask_center = normal_dist.sample()
+    mask_center = mask_center.clamp(0,1)
+    mask_center = mask_center * torch.tensor([width,height])
     min_scale = torch.tensor([min_scale,min_scale])
     max_scale = torch.tensor([max_scale,max_scale])
     delta_begin = (torch.rand(2) * (max_scale - min_scale) + min_scale) * 0.5
@@ -109,7 +119,7 @@ def random_mask(view,min_scale=10,max_scale=200):
     x2,y2 = mask_end_pos
     mask = torch.zeros([B,1,width,height])
     mask[...,x1:x2,y1:y2] = 1
-    masked_pts3d = view['pts3d']
+    masked_pts3d = view['camera_pts3d']
     masked_pts3d[:,x1:x2,y1:y2,...] = 0
     masked_pts3d = masked_pts3d.permute(0,3,1,2)
     view['input'] = torch.cat((img,masked_pts3d,mask),dim=1)

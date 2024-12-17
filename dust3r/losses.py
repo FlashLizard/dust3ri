@@ -46,8 +46,7 @@ def get_all_pts3d(gt1, gt2, pred1, pred2, dist_clip=None):
         # normalize 3d points
         pr_pts1, pr_pts2 = normalize_pointcloud(pr_pts1, pr_pts2, 'avg_dis', valid1, valid2)
         gt_pts1, gt_pts2 = normalize_pointcloud(gt_pts1, gt_pts2, 'avg_dis', valid1, valid2)
-
-        return gt_pts1[valid1], gt_pts2[valid2], pr_pts1[valid1], pr_pts2[valid2], valid1, valid2, {}
+        return gt_pts1, gt_pts2, pr_pts1, pr_pts2, valid1, valid2, {}
 
 class BaseCriterion(nn.Module):
     def __init__(self, reduction='mean'):
