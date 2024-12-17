@@ -1,8 +1,3 @@
-# Copyright (C) 2024-present Naver Corporation. All rights reserved.
-# Licensed under CC BY-NC-SA 4.0 (non-commercial use only).
-#
-# --------------------------------------------------------
-# utilities needed for the inference
 # --------------------------------------------------------
 import tqdm
 import torch
@@ -20,47 +15,75 @@ def loss_of_one_batch_with_single_view(batch, model, criterion, device, symmetri
 def loss_of_one_batch_with_random_transform(batch, model, criterion, device, symmetrize_batch=False, use_amp=False, ret=None):
     view1, _ = batch
     _, R, T = random_transform(view1['pts3d'])
-    view1['camera_pose'] = torch.mm(torch.mm(R, T), view1['camera_pose'])
+    view1['camera_pose'] = torch.bmm(torch.bmm(R, T), view1['camera_pose'])
     view1['pts3d'] = geotrf(inv(view1['camera_pose']), view1['pts3d'])
     view1 = random_mask(view1)
     batch = [view1, view1]
     return loss_of_one_batch_with_single_view(batch, model, criterion, device, symmetrize_batch, use_amp, ret)
 
-def random_translation_matrix_3d(scale=1.0):
-    tx = (torch.rand(1) - 0.5) * scale
-    ty = (torch.rand(1) - 0.5) * scale
-    tz = (torch.rand(1) - 0.5) * scale
+def random_translation_matrix_3d(batch_size=1, scale=1.0):
+    """
+    output:
+    - T.shape:  (batch_size, 4, 4)
+    """
+    # 生成随机的平移向量，形状为 (batch_size, 3)
+    t = (torch.rand(batch_size, 3) - 0.5) * scale
 
-    T = torch.tensor([[1, 0, 0, tx],
-                      [0, 1, 0, ty],
-                      [0, 0, 1, tz],
-                      [0, 0, 0, 1]])
+    # 构建平移矩阵
+    T = torch.eye(4).unsqueeze(0).repeat(batch_size, 1, 1)  # 初始化为单位矩阵
+    T[:, 0, 3] = t[:, 0]  # 设置 tx
+    T[:, 1, 3] = t[:, 1]  # 设置 ty
+    T[:, 2, 3] = t[:, 2]  # 设置 tz
 
     return T
 
 
-def random_rotation_matrix():
-    theta = torch.rand(1) * 2 * math.pi 
-    phi = torch.rand(1) * math.pi  
-    psi = torch.rand(1) * 2 * math.pi  
+def random_rotation_matrix(batch_size=1):
+    """
+    output:
+    - R.shape: (batch_size, 4, 4) 
+    """
+    # 生成随机的欧拉角，形状为 (batch_size, 3)
+    theta = torch.rand(batch_size) * 2 * math.pi  # 绕 z 轴旋转
+    phi = torch.rand(batch_size) * math.pi        # 绕 y 轴旋转
+    psi = torch.rand(batch_size) * 2 * math.pi    # 绕 x 轴旋转
 
-    Rz = torch.tensor([[torch.cos(theta), -torch.sin(theta), 0],
-                       [torch.sin(theta), torch.cos(theta), 0],
-                       [0, 0, 1]])
+    # 计算旋转矩阵的元素
+    cos_theta, sin_theta = torch.cos(theta), torch.sin(theta)
+    cos_phi, sin_phi = torch.cos(phi), torch.sin(phi)
+    cos_psi, sin_psi = torch.cos(psi), torch.sin(psi)
 
-    Ry = torch.tensor([[torch.cos(phi), 0, torch.sin(phi)],
-                       [0, 1, 0],
-                       [-torch.sin(phi), 0, torch.cos(phi)]])
+    # 构建旋转矩阵
+    Rz = torch.zeros(batch_size, 4, 4)
+    Rz[:, 0, 0] = cos_theta
+    Rz[:, 0, 1] = -sin_theta
+    Rz[:, 1, 0] = sin_theta
+    Rz[:, 1, 1] = cos_theta
+    Rz[:, 2, 2] = 1
+    Rz[:, 3, 3] = 1
 
-    Rx = torch.tensor([[1, 0, 0],
-                       [0, torch.cos(psi), -torch.sin(psi)],
-                       [0, torch.sin(psi), torch.cos(psi)]])
-    R = torch.mm(torch.mm(Rz, Ry), Rx)
-    # to 4x4
-    R = torch.cat((R, torch.tensor([[0, 0, 0, 1]])), dim=0)
+    Ry = torch.zeros(batch_size, 4, 4)
+    Ry[:, 0, 0] = cos_phi
+    Ry[:, 0, 2] = sin_phi
+    Ry[:, 1, 1] = 1
+    Ry[:, 2, 0] = -sin_phi
+    Ry[:, 2, 2] = cos_phi
+    Ry[:, 3, 3] = 1
+
+    Rx = torch.zeros(batch_size, 4, 4)
+    Rx[:, 0, 0] = 1
+    Rx[:, 1, 1] = cos_psi
+    Rx[:, 1, 2] = -sin_psi
+    Rx[:, 2, 1] = sin_psi
+    Rx[:, 2, 2] = cos_psi
+    Rx[:, 3, 3] = 1
+
+    # 组合旋转矩阵
+    R = torch.bmm(torch.bmm(Rz, Ry), Rx)
     return R
 
 def random_transform(pts3d,scale=None):
+    B = pts3d.shape[0]
     # random change the pts3d's rotate and translate
     R = random_rotation_matrix().to(pts3d.device)
     if scale is None:
@@ -69,11 +92,12 @@ def random_transform(pts3d,scale=None):
     # change the pts3d
     pts3d = geotrf(R, pts3d)
     pts3d = geotrf(T, pts3d)
-    return pts3d, R, T
+    #TODO: change to individual value for each matrix
+    return pts3d, R.repeat(B,1,1), T.repeat(B,1,1)
 
 def random_mask(view,min_scale=10,max_scale=200):
     img = view['img']
-    width, height = view['img'].size
+    B, C, width, height = view['img'].shape
     mask_center = torch.rand(2) * torch.tensor([width,height])
     min_scale = torch.tensor([min_scale,min_scale])
     max_scale = torch.tensor([max_scale,max_scale])
@@ -83,9 +107,8 @@ def random_mask(view,min_scale=10,max_scale=200):
     mask_end_pos = (mask_center + delta_end).minimum(torch.tensor([width,height])).to(torch.int)
     x1,y1 = mask_begin_pos
     x2,y2 = mask_end_pos
-    mask = torch.zeros_like(img)
+    mask = torch.zeros([B,1,width,height])
     mask[...,x1:x2,y1:y2] = 1
-    mask = mask.permute(0,3,1,2)
     masked_pts3d = view['pts3d']
     masked_pts3d[:,x1:x2,y1:y2,...] = 0
     masked_pts3d = masked_pts3d.permute(0,3,1,2)

@@ -31,7 +31,8 @@ torch.backends.cuda.matmul.allow_tf32 = True  # for gpu >= Ampere and pytorch >=
 from dust3r.model import AsymmetricCroCo3DStereo, inf  # noqa: F401, needed when loading the model
 from dust3r.datasets import get_data_loader  # noqa
 from dust3r.losses import *  # noqa: F401, needed when loading the model
-from dust3r.inference import loss_of_one_batch, loss_of_one_batch_with_single_view, loss_of_one_batch_with_random_transform  # noqa
+from dust3r.inference import loss_of_one_batch
+from dust3r_inpaint.inference import loss_of_one_batch_with_single_view, loss_of_one_batch_with_random_transform  # noqa
 
 import dust3r.utils.path_to_croco  # noqa: F401
 import croco.utils.misc as misc  # noqa

@@ -5,7 +5,8 @@
 # --------------------------------------------------------
 # training executable for DUSt3R
 # --------------------------------------------------------
-from dust3r_inpaint.training import get_args_parser, test
+from dust3r.training import get_args_parser
+from dust3r_inpaint.training import test
 
 if __name__ == '__main__':
     args = get_args_parser()
