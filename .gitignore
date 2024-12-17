@@ -132,3 +132,5 @@ dmypy.json
 .pyre/
 
 *.safetensors
+pretrained/*
+cache

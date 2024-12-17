@@ -24,6 +24,30 @@ def Sum(*losses_and_masks):
             loss = loss + loss2
         return loss
 
+def get_all_pts3d(gt1, gt2, pred1, pred2, dist_clip=None):
+        # everything is normalized w.r.t. camera of view1
+        in_camera1 = inv(gt1['camera_pose'])
+        gt_pts1 = geotrf(in_camera1, gt1['pts3d'])  # B,H,W,3
+        gt_pts2 = geotrf(in_camera1, gt2['pts3d'])  # B,H,W,3
+
+        valid1 = gt1['valid_mask'].clone()
+        valid2 = gt2['valid_mask'].clone()
+
+        if dist_clip is not None:
+            # points that are too far-away == invalid
+            dis1 = gt_pts1.norm(dim=-1)  # (B, H, W)
+            dis2 = gt_pts2.norm(dim=-1)  # (B, H, W)
+            valid1 = valid1 & (dis1 <= dist_clip)
+            valid2 = valid2 & (dis2 <= dist_clip)
+
+        pr_pts1 = get_pred_pts3d(gt1, pred1, use_pose=False)
+        pr_pts2 = get_pred_pts3d(gt2, pred2, use_pose=True)
+
+        # normalize 3d points
+        pr_pts1, pr_pts2 = normalize_pointcloud(pr_pts1, pr_pts2, 'avg_dis', valid1, valid2)
+        gt_pts1, gt_pts2 = normalize_pointcloud(gt_pts1, gt_pts2, 'avg_dis', valid1, valid2)
+
+        return gt_pts1[valid1], gt_pts2[valid2], pr_pts1[valid1], pr_pts2[valid2], valid1, valid2, {}
 
 class BaseCriterion(nn.Module):
     def __init__(self, reduction='mean'):
@@ -102,7 +126,7 @@ class MultiLoss (nn.Module):
         res = copy(self)
         res._alpha = alpha
         return res
-    __rmul__ = __mul__  # same
+    __rmul__ = __mul__  # sameAveraged stats
 
     def __add__(self, loss2):
         assert isinstance(loss2, MultiLoss)
@@ -174,6 +198,7 @@ class Regr3D (Criterion, MultiLoss):
         pr_pts1 = get_pred_pts3d(gt1, pred1, use_pose=False)
         pr_pts2 = get_pred_pts3d(gt2, pred2, use_pose=True)
 
+        # PROB: should use to random cam pose?
         # normalize 3d points
         if self.norm_mode:
             pr_pts1, pr_pts2 = normalize_pointcloud(pr_pts1, pr_pts2, self.norm_mode, valid1, valid2)
