@@ -29,7 +29,7 @@ def random_translation_matrix_3d(batch_size=1, scale=1.0):
     - T.shape:  (batch_size, 4, 4)
     """
     # 生成随机的平移向量，形状为 (batch_size, 3)
-    t = (torch.rand(batch_size, 3) - 0.5) * scale
+    t = (torch.rand(batch_size, 3) - 0.5) * scale.unsqueeze(1).repeat(1,3)
 
     # 构建平移矩阵
     T = torch.eye(4).unsqueeze(0).repeat(batch_size, 1, 1)  # 初始化为单位矩阵
@@ -87,15 +87,12 @@ def random_rotation_matrix(batch_size=1):
 def random_transform(pts3d,scale=None):
     B = pts3d.shape[0]
     # random change the pts3d's rotate and translate
-    R = random_rotation_matrix().to(pts3d.device)
+    R = random_rotation_matrix(batch_size=B).to(pts3d.device)
     if scale is None:
-        scale = pts3d.max() - pts3d.min()
-    T = random_translation_matrix_3d(scale=scale).to(pts3d.device)
-    # change the pts3d
-    pts3d = geotrf(R, pts3d)
-    pts3d = geotrf(T, pts3d)
+        scale = pts3d.view(B,-1).max(dim=1)[0] - pts3d.view(B,-1).min(dim=1)[0]
+    T = random_translation_matrix_3d(batch_size=B,scale=scale).to(pts3d.device)
     #TODO: change to individual value for each matrix
-    return pts3d, R.repeat(B,1,1), T.repeat(B,1,1)
+    return None, R, T
 
 def random_mask(view,min_scale=20,max_scale=200):
     

@@ -141,6 +141,10 @@ def train(args):
 
     best_so_far = misc.load_model(args=args, model_without_ddp=model_without_ddp,
                                   optimizer=optimizer, loss_scaler=loss_scaler)
+    
+    total_params = sum(p.numel() for p in model.parameters())
+
+    print(f"Model parameters: {total_params}")
     if best_so_far is None:
         best_so_far = float('inf')
     if global_rank == 0 and args.output_dir is not None:
@@ -249,33 +253,37 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 # save img
                 img = view1['img'][0].permute(1,2,0)
                 img = ((img - img.min())/(img.max()-img.min())*255).cpu().numpy().astype(np.uint8)
-                Image.fromarray(img).save(f'{cache_dir}/img.jpg')
+                Image.fromarray(img).save(f'{cache_dir}/({x1},{y1})-({x2},{y2})img.jpg')
                 masked_img = img
                 masked_img[x1:x2,y1:y2,:] = 0
                 Image.fromarray(masked_img).save(f'{cache_dir}/({x1},{y1})-({x2},{y2})masked_img.jpg')
                 
                 # save pcd
                 origin_pcd = geotrf(inv(origin_view1['camera_pose']), origin_view1['pts3d'])
+                new_no_masked_pcd = geotrf(inv(view1['camera_pose']), view1['pts3d'])
                 new_pcd = view1['camera_pts3d']
                 # out_pcd = pred1['pts3d']
                 _, _, out_pcd, _, valid1, _, _ = get_all_pts3d(view1, view2, pred1, pred2)
-                valid1[1,:,:]=0
+                valid1[1:,:,:]=0
                 origin_pcd = normalize_pointcloud(origin_pcd, None, 'avg_dis')
+                new_no_masked_pcd = normalize_pointcloud(new_no_masked_pcd, None, 'avg_dis')
                 new_pcd = normalize_pointcloud(new_pcd, None, 'avg_dis')
+                save_pcd(f'{cache_dir}/({x1},{y1})-({x2},{y2})out_pcd_no_norm.ply', out_pcd[valid1])
                 out_pcd = normalize_pointcloud(out_pcd, None, 'avg_dis')
                 
                 # save the first one
-                save_pcd(f'{cache_dir}/origin_pcd.ply', origin_pcd[0])
-                save_pcd(f'{cache_dir}/new_pcd.ply', new_pcd[0])
-                save_pcd(f'{cache_dir}/out_pcd.ply', out_pcd[valid1])
+                save_pcd(f'{cache_dir}/({x1},{y1})-({x2},{y2})origin_pcd.ply', origin_pcd[0])
+                save_pcd(f'{cache_dir}/({x1},{y1})-({x2},{y2})new_no_masked_pcd.ply', new_no_masked_pcd[0])
+                save_pcd(f'{cache_dir}/({x1},{y1})-({x2},{y2})new_pcd.ply', new_pcd[0])
+                save_pcd(f'{cache_dir}/({x1},{y1})-({x2},{y2})out_pcd.ply', out_pcd[valid1])
                 masked_origin_pcd = origin_pcd
                 masked_origin_pcd[:,x1:x2,y1:y2,:] = 0
-                save_pcd(f'{cache_dir}/masked_origin_pcd.ply', masked_origin_pcd[0])
+                save_pcd(f'{cache_dir}/({x1},{y1})-({x2},{y2})masked_origin_pcd.ply', masked_origin_pcd[0])
                 
                 # save R and T info
                 R = view1['R'][0]
                 T = view1['T'][0]
-                with open(f'{cache_dir}/RT.txt', 'w') as f:
+                with open(f'{cache_dir}/({x1},{y1})-({x2},{y2})RT.txt', 'w') as f:
                     f.write(f'R:\n{R}\n')
                     f.write(f'T:\n{T}\n')
                 
